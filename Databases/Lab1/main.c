@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <time.h>
+//#include <sys/types.h>
+//#include <sys/stat.h>
 
 /*
    Print int a: printf("%d\n",a); printf("%i\n", a);
@@ -125,24 +127,52 @@ typedef struct {
 } IndexCell;
 
 typedef struct {
-    int fid; //file for indexes
+    int find; //file for indexes
     int ftbl; //table
     int fmng; //file for resource manager
-    IndexCell* ind;
+    IndexCell* tind;
     long int garbage[5];
     long int deletion_manager;
-    long int next_line_pos;
+    long int next_free_line;
     long int total;
     long int prs_count;
 } Table;
 Table airlines, flights;
 
 
+int read_fully(int fd, unsigned char* buf, size_t nb) {
+    int n, r;
+
+    r = 0;
+    while (nb != 0) {
+        n = read(fd, buf, nb);
+        if (n < 0) return n;        /* error */
+        if (n == 0) return r;        /* end of file */
+        nb -= n;                        /* 0 < n <= nb */
+        buf += n;
+    }
+    return r;
+}
+
+int write_fully(int fd, unsigned char* buf, size_t nb) {
+    int n, r;
+
+    r = 0;
+    while (nb != 0) {
+        n = write(fd, buf, nb);
+        if (n < 0) return n;        /* error */
+        if (n == 0) return r;        /* end of file */
+        nb -= n;                        /* 0 < n <= nb */
+        buf += n;
+    }
+    return r;
+}
+
 
 void print_indt(Table* t) {
     printf("Present - PK - index\n");
     for (int i = 0; i < t->total; ++i)
-        printf("%d - %d - %d\n", t->ind[i].present, t->ind[i].PK, t->ind[i].ind);
+        printf("%d - %d - %d\n", t->tind[i].present, t->tind[i].PK, t->tind[i].ind);
     endl();
 }
 
@@ -151,9 +181,8 @@ void print_data_m() {
     for (int i = 0; i < airlines.total; ++i) {
         Airline a;
         lseek(airlines.ftbl, sizeof(Airline)*i, SEEK_SET);
-        read(airlines.ftbl, &a, sizeof(Airline));
+        read_fully(airlines.ftbl, &a, sizeof(Airline));
 
-        printf("-------------------------"); endl();
         airline_print(&a);
         printf("-------------------------"); endl();
     }
@@ -164,9 +193,8 @@ void print_data_s() {
     for (int i = 0; i < flights.total; ++i) {
         Flight f;
         lseek(flights.ftbl, sizeof(Flight)*i, SEEK_SET);
-        read(flights.ftbl, &f, sizeof(Flight));
+        read_fully(flights.ftbl, &f, sizeof(Flight));
 
-        printf("-------------------------"); endl();
         flight_print(&f);
         printf("-------------------------"); endl();
     }
@@ -175,38 +203,37 @@ void print_data_s() {
 long int add_to_sublist(long int index_main, long int index_sub) {
     Airline a;
     lseek(airlines.ftbl, index_main * sizeof(Airline), SEEK_SET);
-    read(airlines.ftbl, &a, sizeof(Airline));
+    read_fully(airlines.ftbl, &a, sizeof(Airline));
 
     long int next_sub = a.indSub;
     a.indSub = index_sub;
     
-    lseek(airlines.ftbl, index_main * sizeof(Airline), SEEK_SET);
-    write(airlines.ftbl, &a, sizeof(Airline));
+    write_fully(airlines.ftbl, &a, sizeof(Airline));
 
     return next_sub;
 }
 
 void adjust_mng_info_after_insert(Table* t, long int ind) {
-    if (ind != t->next_line_pos) {
+    if (ind != t->next_free_line) {
         t->garbage[t->deletion_manager - 1] = -1;
         --t->deletion_manager;
     }
     else
-        ++t->next_line_pos;
+        ++t->next_free_line;
 
     ++t->total;
     ++t->prs_count;
 }
 
 //TODO: check if all memory is used
-long int get_insert_pos(Table* t) {
+long int get_insert_index(Table* t) {
     long int pos;   
     if (t->deletion_manager > 0) {
         pos = t->garbage[t->deletion_manager - 1];     
         return pos;
     } 
     else {     
-        pos = t->next_line_pos;       
+        pos = t->next_free_line;
         return pos;
     }
 }
@@ -234,20 +261,17 @@ long int binary_search(IndexCell* itbl, unsigned long int key, long int left, lo
 int insert_to_indtbl(Table* t, IndexCell* cell) {
     long int pos = 0;
     if (t->total) //if there're another items we should search for appropriate position
-        pos = binary_search(t->ind, cell->PK, 0, t->total - 1);
+        pos = binary_search(t->tind, cell->PK, 0, t->total - 1);
     else { //it's the first item
-        t->ind[0] = *cell;
+        t->tind[0] = *cell;
         adjust_mng_info_after_insert(t, cell->ind);
 
         return 0;
     }
 
     //check for uniqueness
-    if ((pos < t->total)
-        && (t->ind[pos].PK == cell->PK))
-    {
+    if ((pos < t->total) && (t->tind[pos].PK == cell->PK))
         return -1;
-    }
 
     if (t->total == 10)
         endl();
@@ -255,9 +279,9 @@ int insert_to_indtbl(Table* t, IndexCell* cell) {
     //if item's PK is in the middle, we should shift greater PKs
     if (pos < t->total) {
         for (int i = t->total; i > pos; --i)
-            t->ind[i] = t->ind[i - 1];
+            t->tind[i] = t->tind[i - 1];
     }
-    t->ind[pos] = *cell; 
+    t->tind[pos] = *cell; 
     adjust_mng_info_after_insert(t, cell->ind);
 
     return 0;
@@ -265,55 +289,59 @@ int insert_to_indtbl(Table* t, IndexCell* cell) {
 
 long int search_pos_indt(Table* t, char* key) {
     unsigned long int h = hash(key);
-    long int ind = binary_search(t->ind, h, 0, t->total - 1);
+    long int pos = binary_search(t->tind, h, 0, t->total - 1);
 
-    if ((ind >= t->total)
-        || ((ind < t->total) && (t->ind[ind].PK != h)))
+    if ((pos >= t->total)
+        || ((pos < t->total) && (t->tind[pos].PK != h)))
     {
         printf("Error: No such item in database\n");
     }
-    return ind;
+    return pos;
 }
 
 long int search(Table* t, char* key) {
-    long int ind = search_pos_indt(t, key);
-    return ind != -1? t->ind[ind].ind : -1;
+    long int pos = search_pos_indt(t, key);
+    return pos != -1? t->tind[pos].ind : -1;
 }
 
 void remove_from_sublist(long int index) {
     Flight f;
     lseek(flights.ftbl, sizeof(Flight)*index, SEEK_SET);
-    read(flights.ftbl, &f, sizeof(Flight));
+    read_fully(flights.ftbl, &f, sizeof(Flight));
 
-    long int next_ind = f.next;
+    long int next_index = f.next;
 
     Airline a;
     lseek(airlines.ftbl, sizeof(Airline)*f.ind_main, SEEK_SET);
-    read(airlines.ftbl, &a, sizeof(Airline));
+    read_fully(airlines.ftbl, &a, sizeof(Airline));
 
+    //if index is head of sublist
     if (a.indSub == index) {
-        a.indSub = next_ind;
+        a.indSub = next_index;
         lseek(airlines.ftbl, sizeof(Airline)*f.ind_main, SEEK_SET);
-        read(airlines.ftbl, &a, sizeof(Airline));
+        read_fully(airlines.ftbl, &a, sizeof(Airline));
         return;
     }
 
     long int it = a.indSub;
+    long int prev_it;
     while (f.next != index) {
         lseek(flights.ftbl, sizeof(Flight)*it, SEEK_SET);
-        read(flights.ftbl, &f, sizeof(Flight));
+        read_fully(flights.ftbl, &f, sizeof(Flight));
+        prev_it = it;
         it = f.next;
     }
 
-    f.next = next_ind;
-    write(flights.ftbl, &f, sizeof(Flight));
+    f.next = next_index;
+    lseek(flights.ftbl, sizeof(Flight) * prev_it, SEEK_SET);
+    write_fully(flights.ftbl, &f, sizeof(Flight));
 }
 
 void remove_from_indtbl(Table* t, long int pos) {
-    t->ind[pos].present = 0;
+    t->tind[pos].present = 0;
     t->prs_count--;
     t->deletion_manager++;
-    t->garbage[t->deletion_manager - 1] = t->ind[pos].ind;
+    t->garbage[t->deletion_manager - 1] = t->tind[pos].ind;
 }
 
 
@@ -321,7 +349,7 @@ void remove_from_indtbl(Table* t, long int pos) {
 
 
 int insert_m(char* info[]) {   
-    long int pos = get_insert_pos(&airlines);
+    long int pos = get_insert_index(&airlines);
     
     Airline a;
     a.present = 1;
@@ -342,7 +370,7 @@ int insert_m(char* info[]) {
     }
 
     lseek(airlines.ftbl, sizeof(Airline) * pos, SEEK_SET);
-    write(airlines.ftbl, &a, sizeof(Airline));
+    write_fully(airlines.ftbl, &a, sizeof(Airline));
 
    // printf("Main item inserted %s\n", a.name);
 
@@ -350,7 +378,7 @@ int insert_m(char* info[]) {
 }
 
 int insert_s(char* info[]) {
-    long int pos = get_insert_pos(&flights);
+    long int pos = get_insert_index(&flights);
 
     Flight f;
     f.present = 1;
@@ -382,7 +410,7 @@ int insert_s(char* info[]) {
     f.next = add_to_sublist(ind_main, pos);
 
     lseek(flights.ftbl, sizeof(Flight) * pos, SEEK_SET);
-    write(flights.ftbl, &f, sizeof(Flight));
+    write_fully(flights.ftbl, &f, sizeof(Flight));
 
     //printf("Sub item inserted with PK %d\n", h); endl();
 
@@ -396,7 +424,7 @@ Airline* get_mitem(char* key) {
 
     Airline* a = (Airline*)malloc(sizeof(Airline));
     lseek(airlines.ftbl, sizeof(Airline)*ind, SEEK_SET);
-    read(airlines.ftbl, a, sizeof(Airline));
+    read_fully(airlines.ftbl, a, sizeof(Airline));
 
     return a;
 }
@@ -408,7 +436,7 @@ Flight* get_sitem(char* key) {
 
     Flight* f = (Flight*)malloc(sizeof(Flight));
     lseek(flights.ftbl, sizeof(Flight)*ind, SEEK_SET);
-    read(flights.ftbl, f, sizeof(Flight));
+    read_fully(flights.ftbl, f, sizeof(Flight));
 
     return f;
 }
@@ -449,16 +477,16 @@ int delete_s(char* key) {
     if (pos == -1)
         return -1;
 
-    long int ind = flights.ind[pos].ind;
+    long int ind = flights.tind[pos].ind;
 
     remove_from_sublist(ind);
     remove_from_indtbl(&flights, pos);
 
     Flight f;
     lseek(flights.ftbl, sizeof(Flight)*ind, SEEK_SET);
-    read(flights.ftbl, &f, sizeof(Flight));
+    read_fully(flights.ftbl, &f, sizeof(Flight));
     f.present = 0;
-    write(flights.ftbl, &f, sizeof(Flight));
+    write_fully(flights.ftbl, &f, sizeof(Flight));
     
     return 0;
 }
@@ -470,23 +498,25 @@ int delete_m(char* key) {
     
     remove_from_indtbl(&airlines, pos);
     
-    long int ind = airlines.ind[pos].ind;
+    long int ind = airlines.tind[pos].ind;
     Airline a;
     lseek(airlines.ftbl, sizeof(Airline)*ind, SEEK_SET);
-    read(airlines.ftbl, &a, sizeof(Airline));
+    read_fully(airlines.ftbl, &a, sizeof(Airline));
     a.present = 0;
-    write(airlines.ftbl, &a, sizeof(Airline));
+    lseek(airlines.ftbl, sizeof(Airline) * ind, SEEK_SET);
+    write_fully(airlines.ftbl, &a, sizeof(Airline));
 
     Flight f;
     long int it = a.indSub;
     long int sub_pos;
     while (it != -1) {
         lseek(flights.ftbl, sizeof(Flight)*it, SEEK_SET);
-        read(flights.ftbl, &f, sizeof(Flight));
+        read_fully(flights.ftbl, &f, sizeof(Flight));
         f.present = 0;
-        write(flights.ftbl, &f, sizeof(Flight));
+        lseek(flights.ftbl, sizeof(Flight) * it, SEEK_SET);
+        write_fully(flights.ftbl, &f, sizeof(Flight));
 
-        sub_pos = binary_search(flights.ind, hash(f.code), 0, flights.total - 1);
+        sub_pos = binary_search(flights.tind, hash(f.code), 0, flights.total - 1);
         remove_from_indtbl(&flights, sub_pos);
 
         it = f.next;
@@ -507,24 +537,24 @@ void print_db() {
 
 int main() {
     flights.ftbl = open(ts, O_CREAT | O_RDWR);
-    chsize(flights.ftbl, 500);
+    chsize(flights.ftbl, 5000);
     //close(flights.ftbl);
     //flights.ftbl= open(ts, O_RDWR);   
     flights.total = 0;
     flights.prs_count = 0;
     flights.deletion_manager = 0;
-    flights.next_line_pos = 0;
-    flights.ind = (IndexCell*)malloc(RECORDS_PER_UNIT * sizeof(IndexCell));
+    flights.next_free_line = 0;
+    flights.tind = (IndexCell*)malloc(RECORDS_PER_UNIT * sizeof(IndexCell));
     
     airlines.ftbl = open(tm, O_CREAT | O_RDWR);
-    chsize(airlines.ftbl, 500);
+    chsize(airlines.ftbl, 5000);
     //close(airlines.ftbl);
     //airlines.ftbl = open(tm, O_RDWR);
     airlines.total = 0;
     airlines.prs_count = 0;
     airlines.deletion_manager = 0;
-    airlines.next_line_pos = 0;
-    airlines.ind = (IndexCell*)malloc(RECORDS_PER_UNIT * sizeof(IndexCell));
+    airlines.next_free_line = 0;
+    airlines.tind = (IndexCell*)malloc(RECORDS_PER_UNIT * sizeof(IndexCell));
 
     char* inf[4];
     for (int i = 0; i < 4; ++i) {
@@ -559,7 +589,15 @@ int main() {
 
     print_db();
 
+    for (int i = 0; i < 10; ++i) {
+        char key[20];
+        fgets(key, sizeof(key), stdin);
+        key[strlen(key) - 1] = 0;
 
+        delete_s(key);
+
+        print_db();
+    }
 
     close(flights.ftbl);
     close(airlines.ftbl);

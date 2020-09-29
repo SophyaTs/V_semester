@@ -574,7 +574,7 @@ int edit_s(const char* key, const char* new_info[]) {
 }
 
 long int count_s_for_m(const char* key) {
-    long int pos = search_pos_tind(&airlines, key);
+    long int pos = search_pos_tind(&airlines, hash(key));
     
     if (pos != -1) {
         return count_subitems(pos);
@@ -728,8 +728,8 @@ void interact() {
     char* key = (char*)malloc(FIELD_LENGTH * sizeof(char));
 
     int choice = 1;
-    while ((choice > 0) && (choice<12)) {
-        printf("Choose action:\n 1 = Get-m\n 2 = Get-s\n 3 = Insert-m\n 4 = Insert-s\n 5 = Edit-m\n 6 = Edit-s\n 7 = Delete-m\n 8 = Delete-s\n 9 = print database\n 10 = count all records\n 11 = count main records\n 11 = count subrecords\n 13 = count subrecords for main record\n 0 = EXIT\n");
+    while ((choice > 0) && (choice<14)) {
+        printf("Choose action:\n 1 = Get-m\n 2 = Get-s\n 3 = Insert-m\n 4 = Insert-s\n 5 = Edit-m\n 6 = Edit-s\n 7 = Delete-m\n 8 = Delete-s\n 9 = print database\n 10 = count all records\n 11 = count main records\n 12 = count subrecords\n 13 = count subrecords for main record\n 0 = EXIT\n");
         scanf_s("%d", &choice);
         getchar();
 
@@ -835,7 +835,7 @@ void interact() {
         }
         else if (choice == 13) {
             printf("Enter the key:\n");
-            fgets(key, sizeof(key), stdin);
+            fgets(key, FIELD_LENGTH, stdin);
             key[strlen(key) - 1] = 0;
 
             printf("Subrecords for this main record: %d\n", count_s_for_m(key));

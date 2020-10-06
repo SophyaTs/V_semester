@@ -105,6 +105,10 @@ int main(int argc, char* argv[]) {
         in_pipes[other] >> computations[other];
     }
     
+    //just making sure that both processes had exited 
+    processes[0].wait();
+    processes[1].wait();
+
     if (result != false)
         result = computations[0] && computations[1];
     

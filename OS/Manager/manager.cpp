@@ -3,40 +3,36 @@
 #include <string>
 #include <chrono>
 #include <thread>
-#include <mutex>
 #include <windows.h>
 #include <stdio.h>
-
-using std::cout, std::endl, std::string;
 namespace bp = boost::process;
 
-HANDLE hStdin;
-DWORD fdwSaveOldMode;
 
-bp::child processes[2];
-
-//std::mutex exit_lock;
-bool exit_pressed = false;
-
-VOID KeyEventProc(KEY_EVENT_RECORD ker) {
-    //ESC button was pressed
+bool procKeyEvent(KEY_EVENT_RECORD ker) {
+    //Esc button was pressed
     if (ker.uChar.AsciiChar == 27) {
-        std::string exitMessage = "Exit was pressed\n";
-        if (processes[0].running()) {
-            exitMessage += "Function f hasn't been computed\n";
-            processes[0].terminate();
-        }
-        if (processes[1].running()) {
-            exitMessage += "Function g hasn't been computed\n";
-            processes[1].terminate();
-        }
-        
-        cout << exitMessage;
-        exit_pressed = true;
+        return true;
     }
+
+    return false;
 }
 
-void inputHandler() {
+std::string composeExitMessage(bp::child* processes) {
+    std::string exitMessage = "Esc was pressed\n";
+    if (processes[0].running()) {
+        exitMessage += "Function f(x) hasn't been computed\n";
+        processes[0].terminate();
+    }
+    if (processes[1].running()) {
+        exitMessage += "Function g(x) hasn't been computed\n";
+        processes[1].terminate();
+    }
+
+    return exitMessage;
+}
+
+void inputHandler(bp::child* processes) {
+    HANDLE hStdin;
     DWORD cNumRead, fdwMode, i;
     INPUT_RECORD irInBuf[128];
     int counter = 0;
@@ -44,15 +40,7 @@ void inputHandler() {
     // Get the standard input handle. 
     hStdin = GetStdHandle(STD_INPUT_HANDLE);
 
-    // Save the current input mode, to be restored on exit. 
-    GetConsoleMode(hStdin, &fdwSaveOldMode);
-
-    // Enable the window and mouse input events. 
-    fdwMode = ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT;
-    SetConsoleMode(hStdin, fdwMode);
-
     // Loop to read and handle the next 100 input events. 
-
     while (1) {   
         // Wait for the events. 
 
@@ -65,10 +53,8 @@ void inputHandler() {
         // Dispatch the events to the appropriate handler. 
         for (i = 0; i < cNumRead; i++) {       
             if (irInBuf[i].EventType == KEY_EVENT) {
-                KeyEventProc(irInBuf[i].Event.KeyEvent);
-                if (exit_pressed) {
-                    // Restore input mode on exit.
-                    SetConsoleMode(hStdin, fdwSaveOldMode);
+                if (procKeyEvent(irInBuf[i].Event.KeyEvent)) {
+                    std::cout << composeExitMessage(processes) << std::endl;
                     exit(0);
                 }
             }           
@@ -79,27 +65,29 @@ void inputHandler() {
 
 int main(int argc, char* argv[]) {
     bp::ipstream in_pipes[2];
+    bp::child processes[2];
     int computations[2];
     bool result = true;
 
+    std::cout << "Enter x... ";
     int x;
     std::cin >> x;
-
+     
+    //starting processes
     std::string launch_parameters = "Function.exe f " + std::to_string(x);
-    processes[0] = bp::child(launch_parameters, bp::std_out > in_pipes[0]);
-    
+    processes[0] = bp::child(launch_parameters, bp::std_out > in_pipes[0]);   
     launch_parameters = "Function.exe g " + std::to_string(x);
-    processes[1] = bp::child(launch_parameters, bp::std_out > in_pipes[1]);
-    processes[0].detach();
-    processes[1].detach();
+    processes[1] = bp::child(launch_parameters, bp::std_out > in_pipes[1]);    
 
-    std::thread exitListener(inputHandler);
-    exitListener.detach();
+    std::thread escListener(inputHandler, processes);
+    escListener.detach();
 
+    //waiting for at least one of processes to finish
     while (processes[0].running() && processes[1].running()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     
+    //check if we got zero
     int other = 0;
     for(int i=0;i<2;++i)
     if (!processes[i].running()) {
@@ -111,18 +99,16 @@ int main(int argc, char* argv[]) {
         }       
     }
 
+    //waiting for other process to finish if needed
     if (processes[other].running()) {
-        while (processes[other].running()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
+        processes[other].wait();
         in_pipes[other] >> computations[other];
-        //cout << "Got the other result: " << computations[other] << endl;
     }
     
     if (result != false)
         result = computations[0] && computations[1];
     
-    cout << "The final result: " << result << endl;
+    std::cout << "The final result: " << result << std::endl;
     
     return 0;
 }

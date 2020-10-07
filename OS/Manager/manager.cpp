@@ -33,7 +33,7 @@ std::string composeExitMessage(bp::child* processes) {
 
 void inputHandler(bp::child* processes) {
     HANDLE hStdin;
-    DWORD cNumRead, fdwMode, i;
+    DWORD cNumRead, i;
     INPUT_RECORD irInBuf[128];
     int counter = 0;
 
@@ -65,6 +65,7 @@ void inputHandler(bp::child* processes) {
 
 int main(int argc, char* argv[]) {
     bp::ipstream in_pipes[2];
+    bp::opstream out_pipes[2];
     bp::child processes[2];
     int computations[2];
     bool result = true;
@@ -74,10 +75,14 @@ int main(int argc, char* argv[]) {
     std::cin >> x;
      
     //starting processes
-    std::string launch_parameters = "Function.exe f " + std::to_string(x);
-    processes[0] = bp::child(launch_parameters, bp::std_out > in_pipes[0]);   
-    launch_parameters = "Function.exe g " + std::to_string(x);
-    processes[1] = bp::child(launch_parameters, bp::std_out > in_pipes[1]);    
+    processes[0] = bp::child("Function.exe", bp::std_out > in_pipes[0], bp::std_in < out_pipes[0]);
+    processes[1] = bp::child("Function.exe", bp::std_out > in_pipes[1], bp::std_in <  out_pipes[1]);
+
+    //giving processes thier parameters
+    out_pipes[0] << 'f' << std::endl << x <<std::endl;
+    out_pipes[0].close();
+    out_pipes[1] << 'g' << std::endl << x << std::endl;   
+    out_pipes[1].close();
 
     std::thread escListener(inputHandler, processes);
     escListener.detach();
@@ -96,7 +101,8 @@ int main(int argc, char* argv[]) {
         if (computations[i] == 0) {
             processes[other].terminate();
             result = false;
-        }       
+        }
+        //std::cout << computations[i] << std::endl;
     }
 
     //waiting for other process to finish if needed

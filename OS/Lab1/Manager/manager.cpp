@@ -8,10 +8,11 @@
 #include <stdio.h>
 namespace bp = boost::process;
 
-std::mutex mz, mr, mt;
-std::condition_variable cvz, cvr;
-std::once_flag flag;
-bool finished[] = { false, false };
+std::mutex mz, mr;
+std::condition_variable cvz;
+
+const int TOTALTHREADS = 2;
+int finished = 0;
 bool gotZero = false;
 bool terminated = false;
 int computations[2];
@@ -19,11 +20,8 @@ bp::ipstream in_pipes[2];
 
 void printEscExitMessage(bp::child* processes) {   
     std::string exitMessage = "Esc was pressed\n";
-    
-    {
-        std::lock_guard<std::mutex> lk(mt);
-        terminated = true;
-    }
+
+    terminated = true;
     
     if (processes[0].running()) {
         exitMessage += "Function f(x) hasn't been computed\n";
@@ -92,40 +90,28 @@ void processHandler(const int i) {
     in_pipes[i] >> computation;
 
     //check if processes were terminated
-    bool can_continue;
-    {
-        std::lock_guard<std::mutex> lk(mt);
-        can_continue = !terminated;
-    }
-    if (!can_continue)
-        ExitThread(0);
+    if (terminated)
+        return;
 
     //if we got zero
-    if (!computation) {
-        {
-            std::lock_guard<std::mutex> lk(mz);
-            gotZero = true;
-        }
+    if (computation == 0) {
+        gotZero = true;
         cvz.notify_one();
-        ExitThread(0);
+        return;
     }
 
-    //remember result and notify other thread about finished computing
+    //remember result and check if thread was last to finish
+    bool last = false;
     {
         std::lock_guard<std::mutex> lk(mr);
         computations[i] = computation;
-        finished[i] = true;
-    }
-    cvr.notify_one();
-
-    //wait for another process to finish
-    {
-        std::unique_lock<std::mutex> lk(mr);
-        cvr.wait(lk, [i] { return finished[1 - i]; });
+        ++finished;
+        if (finished == TOTALTHREADS)
+            last = true;
     }
 
-    std::call_once(flag, printResultExitMessage);
-
+    if (last)
+        printResultExitMessage();
 }
 
 
@@ -163,8 +149,9 @@ int main(int argc, char* argv[]) {
         std::unique_lock<std::mutex> lk(mz);
         cvz.wait(lk, [] {return gotZero; });
     }
+    terminated = true;
     for (int i = 0; i < 2; ++i) {
         processes[i].terminate();
     }
-    std::call_once(flag, printResultExitMessage);
+    printResultExitMessage();
 }

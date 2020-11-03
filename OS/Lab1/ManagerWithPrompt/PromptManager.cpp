@@ -5,50 +5,76 @@
 #include <mutex>
 #include <condition_variable>
 #include "MessageBoxTimeout.h"
-
+#include <windows.h>
+#include <tchar.h>
+//#include <afxwin.h>
 
 #include <stdio.h>
 namespace bp = boost::process;
 
-std::mutex mz, mr, mt;
-std::condition_variable cvz, cvr;
-std::once_flag flag;
-bool finished[] = { false, false };
+std::mutex mz, mr;
+std::condition_variable cvz;
+
+const int TOTALTHREADS = 2;
+int finished = 0;
 bool gotZero = false;
 bool terminated = false;
 int computations[2];
 bp::ipstream in_pipes[2];
+
+
 HMODULE hUser32 = LoadLibrary(_T("user32.dll"));
 
 
-void printEscExitMessage(bp::child* processes) {
-    std::string exitMessage = "Cancellation was confirmed\n";
-
-    {
-        std::lock_guard<std::mutex> lk(mt);
+void printEscExitMessage(bp::child* processes) {   
+    if (finished < TOTALTHREADS) {
+        std::string exitMessage = "Cancellation was confirmed\n";
         terminated = true;
-    }
+        if (processes[0].running()) {
+            exitMessage += "Function f(x) hasn't been computed\n";
+            processes[0].terminate();
+        }
+        if (processes[1].running()) {
+            exitMessage += "Function g(x) hasn't been computed\n";
+            processes[1].terminate();
+        }
 
-    if (processes[0].running()) {
-        exitMessage += "Function f(x) hasn't been computed\n";
-        processes[0].terminate();
+        std::cout << exitMessage;
+        FreeLibrary(hUser32);
+        exit(0);
     }
-    if (processes[1].running()) {
-        exitMessage += "Function g(x) hasn't been computed\n";
-        processes[1].terminate();
-    }
-
-    std::cout << exitMessage;
-    FreeLibrary(hUser32);
-    exit(0);
 }
 
 void printResultExitMessage() {
+    int a;
+    
     std::string exitMessage = "The result is ";
     bool result = gotZero ? false : computations[0] && computations[1];
     exitMessage += std::to_string(result);
-
     std::cout << exitMessage << std::endl;
+
+    //CWnd* pWnd = FindWindow(_T("CTimedMsgBox"), _T("Computation Cancellation"));
+    HWND mb = FindWindowExA(NULL, NULL, NULL, (LPSTR)("Computation Cancellation"));
+
+    if (mb == NULL)
+        std::cout << "It's NULL\n";
+
+    std::cout << SendMessage(
+        mb,
+        WM_DESTROY,
+        NULL,
+        NULL) << std::endl;
+
+    /*HOOKPROC hkprcSysMsg;
+    static HHOOK hhookSysMsg;
+    hkprcSysMsg = (HOOKPROC)DestroyWindow(mb);
+    hhookSysMsg = SetWindowsHookEx(
+        WH_MSGFILTER,
+        hkprcSysMsg,
+        NULL,
+        GetWindowThreadProcessId(mb, NULL));*/
+
+    std::cin >> a;
     FreeLibrary(hUser32);
     exit(0);
 }
@@ -59,8 +85,12 @@ int getConfirmation() {
         int iRet = 0;
         UINT uiFlags = MB_YESNO | MB_SETFOREGROUND | MB_SYSTEMMODAL | MB_ICONQUESTION;
 
-        iRet = MessageBoxTimeout(NULL, _T("Are you sure?"),
-            _T("Computation Cancellation"), uiFlags, 0, 5000);
+        iRet = MessageBoxTimeout(NULL, 
+            _T("Are you sure?\nComputations will be cancelled automatically in 15 seconds after this promt appeared."),
+            _T("Computation Cancellation"), 
+            uiFlags, 
+            0, 
+            15000);
 
         return iRet;
     }
@@ -115,39 +145,28 @@ void processHandler(const int i) {
     in_pipes[i] >> computation;
 
     //check if processes were terminated
-    bool can_continue;
-    {
-        std::lock_guard<std::mutex> lk(mt);
-        can_continue = !terminated;
-    }
-    if (!can_continue)
-        ExitThread(0);
+    if (terminated)
+        return;
 
     //if we got zero
-    if (!computation) {
-        {
-            std::lock_guard<std::mutex> lk(mz);
-            gotZero = true;
-        }
+    if (computation == 0) {
+        gotZero = true;
         cvz.notify_one();
-        ExitThread(0);
+        return;
     }
 
-    //remember result and notify other thread about finished computing
+    //remember result and check if thread was last to finish
+    bool last = false;
     {
         std::lock_guard<std::mutex> lk(mr);
         computations[i] = computation;
-        finished[i] = true;
-    }
-    cvr.notify_one();
-
-    //wait for another process to finish
-    {
-        std::unique_lock<std::mutex> lk(mr);
-        cvr.wait(lk, [i] { return finished[1 - i]; });
+        ++finished;
+        if (finished == TOTALTHREADS)
+            last = true;
     }
 
-    std::call_once(flag, printResultExitMessage);
+    if(last) 
+        printResultExitMessage();
 
 }
 
@@ -186,8 +205,9 @@ int main(int argc, char* argv[]) {
         std::unique_lock<std::mutex> lk(mz);
         cvz.wait(lk, [] {return gotZero; });
     }
+    terminated = true;
     for (int i = 0; i < 2; ++i) {
         processes[i].terminate();
     }
-    std::call_once(flag, printResultExitMessage);
+    printResultExitMessage();
 }

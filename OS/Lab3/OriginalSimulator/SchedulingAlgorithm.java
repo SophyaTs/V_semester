@@ -32,7 +32,7 @@ public class SchedulingAlgorithm {
     //int completed = 0;
     String resultsFile = "Summary-Processes";
 
-    result.schedulingType = "Interactive (Nonpreemptive)";
+    result.schedulingType = "Interactive (Preemptive)";
     result.schedulingName = "Round-Robin"; 
     try {
       //BufferedWriter out = new BufferedWriter(new FileWriter(resultsFile));
